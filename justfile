@@ -11,6 +11,8 @@ appdata-dst := base-dir / 'share' / 'appdata' / appid + '.metainfo.xml'
 bin-dst := base-dir / 'bin' / name
 desktop-dst := base-dir / 'share' / 'applications' / appid + '.desktop'
 icon-dst := base-dir / 'share' / 'icons' / 'hicolor' / 'scalable' / 'apps' / appid + '.svg'
+inhibited-icon-dst := base-dir / 'share' / 'icons' / 'hicolor' / 'scalable' / 'apps' / appid + '.Inhibited.svg'
+uninhibited-icon-dst := base-dir / 'share' / 'icons' / 'hicolor' / 'scalable' / 'apps' / appid + '.Uninhibited.svg'
 
 # Default recipe which runs `just build-release`
 default: build-release
@@ -53,10 +55,12 @@ install:
     install -Dm0644 resources/app.desktop {{desktop-dst}}
     install -Dm0644 resources/app.metainfo.xml {{appdata-dst}}
     install -Dm0644 resources/icon.svg {{icon-dst}}
+    install -Dm0644 resources/inhibit_idle.svg {{inhibited-icon-dst}}
+    install -Dm0644 resources/no_inhibit_idle.svg {{uninhibited-icon-dst}}
 
 # Uninstalls installed files
 uninstall:
-    rm {{bin-dst}} {{desktop-dst}} {{icon-dst}}
+    rm {{bin-dst}} {{desktop-dst}} {{icon-dst}} {{inhibited-icon-dst}} {{uninhibited-icon-dst}}
 
 # Vendor dependencies locally
 vendor:

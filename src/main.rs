@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 mod app;
-mod config;
 mod i18n;
 mod screensaver;
 
 fn main() -> cosmic::iced::Result {
+    env_logger::init();
     // Get the system's preferred languages.
     let requested_languages = i18n_embed::DesktopLanguageRequester::requested_languages();
 

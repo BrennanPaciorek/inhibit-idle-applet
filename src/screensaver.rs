@@ -10,5 +10,5 @@ use zbus::{Result, proxy};
 )]
 pub trait ScreenSaver {
     async fn inhibit(&self, application_name: &str, reason_for_inhibit: &str) -> Result<u32>;
-    async fn uninhibit(&self, cookie: u32) -> Result<()>;
+    async fn un_inhibit(&self, cookie: u32) -> Result<()>;
 }

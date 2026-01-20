@@ -1,18 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
-use crate::config::Config;
 use crate::fl;
 use crate::screensaver::ScreenSaverProxy;
-use cosmic::cosmic_config::{self, CosmicConfigEntry};
 use cosmic::iced::futures::executor::block_on;
-use cosmic::iced::{Limits, Subscription, window::Id};
-use cosmic::iced_winit::commands::popup::{destroy_popup, get_popup};
+use cosmic::iced::window::Id;
 use cosmic::prelude::*;
 use cosmic::widget;
-use futures_util::SinkExt;
-use tokio::sync::Mutex;
 use zbus::{Connection, Result};
-
-// TODO fix the borrow checking me.
 
 /// The application model stores app-specific state used to describe its interface and
 /// drive its logic.
@@ -20,14 +13,10 @@ use zbus::{Connection, Result};
 pub struct AppModel {
     /// Application state which is managed by the COSMIC runtime.
     core: cosmic::Core,
-    /// The popup id.
-    popup: Option<Id>,
-    /// Configuration data that persists between application runs.
-    config: Config,
     /// UI tracker for the inhibit idle toggle
     inhibit_idle: bool,
     /// Stores dbus connection for the duration of the application run
-    dbus_connection: Mutex<Option<Connection>>,
+    dbus_connection: Option<Connection>,
     /// Tracks the actual state of whether we're inhibiting idle or not
     inhibit_idle_cookie: Option<u32>,
 }
@@ -35,11 +24,7 @@ pub struct AppModel {
 /// Messages emitted by the application and its widgets.
 #[derive(Debug, Clone)]
 pub enum Message {
-    TogglePopup,
-    PopupClosed(Id),
-    SubscriptionChannel,
-    UpdateConfig(Config),
-    SetInhibitIdle(bool),
+    SetInhibitIdle(bool, Option<u32>),
     ToggleInhibitIdle(bool),
 }
 
@@ -49,46 +34,48 @@ async fn create_dbus_connection() -> Result<Connection> {
 
 impl AppModel {
     const APP_NAME: &'static str = "com.github.brennanpaciorek.inhibit-idle-applet";
+    const INHIBITED_ICON_NAME: &'static str =
+        "com.github.brennanpaciorek.inhibit-idle-applet.Inhibited";
+    const UNINHIBITED_ICON_NAME: &'static str =
+        "com.github.brennanpaciorek.inhibit-idle-applet.Uninhibited";
 
-    async fn toggle_idle(&mut self, toggled: bool) -> Result<()> {
+    async fn toggle_idle(
+        toggled: bool,
+        connection: &Connection,
+        cookie: &Option<u32>,
+    ) -> Result<(bool, Option<u32>)> {
         if toggled {
-            self.inhibit().await?;
+            Ok(Self::inhibit(&connection, cookie).await?)
         } else {
-            self.uninhibit().await?;
+            Ok(Self::uninhibit(&connection, cookie).await?)
         }
-        Ok(())
     }
 
-    async fn inhibit(&mut self) -> Result<()> {
+    async fn inhibit(connection: &Connection, cookie: &Option<u32>) -> Result<(bool, Option<u32>)> {
         // Check config for a cookie, uninhibit
-        if self.inhibit_idle_cookie.is_some() {
-            self.uninhibit().await?;
+        if cookie.is_some() {
+            Self::uninhibit(connection, cookie).await?;
         }
 
-        let connection_option = self.dbus_connection.lock().await;
-        let connection = connection_option
-            .as_ref()
-            .expect("Expected connection, found no connection");
         let proxy = ScreenSaverProxy::new(&connection).await?;
 
-        proxy
+        let cookie = proxy
             .inhibit(AppModel::APP_NAME, "User has enabled the idle inhibitor")
             .await?;
-        Ok(())
+        Ok((true, Some(cookie)))
     }
 
-    async fn uninhibit(&mut self) -> Result<()> {
-        let connection_option = self.dbus_connection.lock().await;
-        let connection = connection_option
-            .as_ref()
-            .expect("Expected connection, found no connection");
+    async fn uninhibit(
+        connection: &Connection,
+        idle_cookie: &Option<u32>,
+    ) -> Result<(bool, Option<u32>)> {
         let proxy = ScreenSaverProxy::new(&connection).await?;
 
-        if let Some(cookie) = self.inhibit_idle_cookie {
-            proxy.uninhibit(cookie).await?;
+        if let Some(cookie) = idle_cookie {
+            proxy.un_inhibit(*cookie).await?;
         }
 
-        Ok(())
+        Ok((false, None))
     }
 }
 
@@ -119,25 +106,13 @@ impl cosmic::Application for AppModel {
         core: cosmic::Core,
         _flags: Self::Flags,
     ) -> (Self, Task<cosmic::Action<Self::Message>>) {
-        let connection = Mutex::new(Some(
+        let connection = Some(
             block_on(async { create_dbus_connection().await })
                 .expect("Failed to establish dbus connection"),
-        ));
+        );
         // Construct the app model with the runtime's core.
         let app = AppModel {
             core,
-            config: cosmic_config::Config::new(Self::APP_ID, Config::VERSION)
-                .map(|context| match Config::get_entry(&context) {
-                    Ok(config) => config,
-                    Err((_errors, config)) => {
-                        // for why in errors {
-                        //     tracing::error!(%why, "error loading app config");
-                        // }
-
-                        config
-                    }
-                })
-                .unwrap_or_default(),
             dbus_connection: connection,
             ..Default::default()
         };
@@ -145,9 +120,9 @@ impl cosmic::Application for AppModel {
         (app, Task::none())
     }
 
-    fn on_close_requested(&self, id: Id) -> Option<Message> {
-        Some(Message::PopupClosed(id))
-    }
+    // fn on_close_requested(&self, id: Id) -> Option<Message> {
+    //     Some(Message::PopupClosed(id))
+    // }
 
     /// Describes the interface based on the current state of the application model.
     ///
@@ -155,10 +130,15 @@ impl cosmic::Application for AppModel {
     /// This view should emit messages to toggle the applet's popup window, which will
     /// be drawn using the `view_window` method.
     fn view(&self) -> Element<'_, Self::Message> {
+        let icon_name = if self.inhibit_idle {
+            Self::INHIBITED_ICON_NAME
+        } else {
+            Self::UNINHIBITED_ICON_NAME
+        };
         self.core
             .applet
-            .icon_button("display-symbolic")
-            .on_press(Message::TogglePopup)
+            .icon_button(icon_name)
+            .on_press(Message::ToggleInhibitIdle(!self.inhibit_idle))
             .into()
     }
 
@@ -183,29 +163,29 @@ impl cosmic::Application for AppModel {
     /// emit messages to the application through a channel. They may be conditionally
     /// activated by selectively appending to the subscription batch, and will
     /// continue to execute for the duration that they remain in the batch.
-    fn subscription(&self) -> Subscription<Self::Message> {
-        struct InhibitIdleSubscription;
+    /// fn subscription(&self) -> Subscription<Self::Message> {
+    ///     struct InhibitIdleSubscription;
 
-        Subscription::batch(vec![
-            // Create a subscription which emits updates through a channel.
-            Subscription::run_with_id(
-                std::any::TypeId::of::<InhibitIdleSubscription>(),
-                cosmic::iced::stream::channel(4, move |mut channel| async move {
-                    _ = channel.send(Message::SubscriptionChannel).await;
-                }),
-            ),
-            // Watch for application configuration changes.
-            self.core()
-                .watch_config::<Config>(Self::APP_ID)
-                .map(|update| {
-                    // for why in update.errors {
-                    //     tracing::error!(?why, "app config error");
-                    // }
+    ///     Subscription::batch(vec![
+    ///         // Create a subscription which emits updates through a channel.
+    ///         Subscription::run_with_id(
+    ///             std::any::TypeId::of::<InhibitIdleSubscription>(),
+    ///             cosmic::iced::stream::channel(4, move |mut channel| async move {
+    ///                 _ = channel.send(Message::SubscriptionChannel).await;
+    ///             }),
+    ///         ),
+    ///         // Watch for application configuration changes.
+    ///         self.core()
+    ///             .watch_config::<Config>(Self::APP_ID)
+    ///             .map(|update| {
+    ///                 // for why in update.errors {
+    ///                 //     tracing::error!(?why, "app config error");
+    ///                 // }
 
-                    Message::UpdateConfig(update.config)
-                }),
-        ])
-    }
+    ///                 Message::UpdateConfig(update.config)
+    ///             }),
+    ///     ])
+    /// }
 
     /// Handles messages emitted by the application and its widgets.
     ///
@@ -214,20 +194,23 @@ impl cosmic::Application for AppModel {
     /// tasks are finished.
     fn update(&mut self, message: Self::Message) -> Task<cosmic::Action<Self::Message>> {
         match message {
-            Message::SubscriptionChannel => {
-                // For example purposes only.
-            }
-            Message::UpdateConfig(config) => {
-                self.config = config;
-            }
             Message::ToggleInhibitIdle(toggled) => {
+                log::debug!("Handling ToggleInhibitIdle({})", toggled);
                 // Update the UI value, roll the change back on failure
                 self.inhibit_idle = toggled;
+                // TODO undo the unwrap at some point
+                let connection = self.dbus_connection.clone().unwrap();
+                let idle_cookie = self.inhibit_idle_cookie.clone();
                 return cosmic::task::future(async move {
-                    let message = match self.toggle_idle(toggled).await {
+                    log::debug!("Starting ToggleInhibitIdle({}) task", toggled);
+                    let message = match AppModel::toggle_idle(toggled, &connection, &idle_cookie)
+                        .await
+                    {
                         // We technically do not need to do anything in this case, but we should
                         // can re-set the value to the right value just in case.
-                        Ok(_) => Message::SetInhibitIdle(toggled),
+                        Ok((idle, new_idle_cookie)) => {
+                            Message::SetInhibitIdle(idle, new_idle_cookie)
+                        }
                         Err(e) => {
                             // Get our logging info
                             let action = if toggled { "inhibit" } else { "uninhibit" }.to_string();
@@ -249,38 +232,15 @@ impl cosmic::Application for AppModel {
                             //   the idle manager.
                             //   The best option may be to log, crash, then send a notification,
                             //   then expect COSMIC to restart.
-                            Message::SetInhibitIdle(!toggled)
+                            Message::SetInhibitIdle(!toggled, idle_cookie)
                         }
                     };
                     return message;
                 });
             }
-            Message::SetInhibitIdle(idle) => self.inhibit_idle = idle,
-            Message::TogglePopup => {
-                return if let Some(p) = self.popup.take() {
-                    destroy_popup(p)
-                } else {
-                    let new_id = Id::unique();
-                    self.popup.replace(new_id);
-                    let mut popup_settings = self.core.applet.get_popup_settings(
-                        self.core.main_window_id().unwrap(),
-                        new_id,
-                        None,
-                        None,
-                        None,
-                    );
-                    popup_settings.positioner.size_limits = Limits::NONE
-                        .max_width(372.0)
-                        .min_width(300.0)
-                        .min_height(200.0)
-                        .max_height(1080.0);
-                    get_popup(popup_settings)
-                };
-            }
-            Message::PopupClosed(id) => {
-                if self.popup.as_ref() == Some(&id) {
-                    self.popup = None;
-                }
+            Message::SetInhibitIdle(idle, idle_cookie) => {
+                self.inhibit_idle = idle;
+                self.inhibit_idle_cookie = idle_cookie;
             }
         }
         Task::none()

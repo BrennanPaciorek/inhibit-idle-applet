@@ -7,6 +7,7 @@ description = "An inhibit idle applet for COSMIC™ desktop"
 repository = "https://github.com/pop-os/cosmic-app-template"
 
 [dependencies]
+env_logger = "0.11.8"
 futures-util = "0.3.31"
 i18n-embed-fl = "0.10"
 log = "0.4.29"
