@@ -2641,7 +2641,6 @@ name = "inhibit-idle-applet"
 version = "0.1.0"
 dependencies = [
  "env_logger",
- "futures-util",
  "i18n-embed",
  "i18n-embed-fl",
  "libcosmic",

@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: MPL-2.0
-
 //! Provides localization support for this crate.
 
 use std::sync::LazyLock;
